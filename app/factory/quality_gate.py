@@ -64,7 +64,7 @@ def check_level1(
     report.char_count = len(text)
 
     # --- Length check ---
-    if len(text) < min_length:
+    if len(text) < min_length and min_length > 0:
         report.issues.append(f"Too short: {len(text)} chars (min {min_length})")
         report.passed = False
 
@@ -202,6 +202,82 @@ def clean_artifacts(text: str) -> str:
     text = re.sub(r"\n---\s*$", "", text)
 
     return text.strip()
+
+
+# --- Number extraction and validation ---
+
+# Patterns for numbers/specs in text
+NUMBER_PATTERNS = [
+    re.compile(r"\$[\d,.]+"),                          # prices: $200, $1,500
+    re.compile(r"\d+[\s]?(?:ГГц|МГц|GHz|MHz)"),       # frequencies
+    re.compile(r"\d+[\s]?(?:ГБ|МБ|TB|GB|MB)"),        # memory/storage
+    re.compile(r"\d+[\s]?(?:Вт|кВт|W|kW)"),           # power
+    re.compile(r"\d+[\s]?(?:А|мА|A|mA)"),              # current
+    re.compile(r"\d+[\s]?(?:В|V)"),                    # voltage
+    re.compile(r"\d+[\s]?(?:Гбит/с|Мбит/с|Gbps|Mbps)"),  # bandwidth
+    re.compile(r"\d+[\s]?(?:FPS|fps|Гц|Hz)"),          # framerates
+    re.compile(r"\d+[\s]?(?:мм|см|м|mm|cm|m)\b"),      # dimensions
+    re.compile(r"\d+[\s]?(?:г|кг|g|kg)\b"),            # weight
+    re.compile(r"\d+[\s]?%"),                           # percentages
+    re.compile(r"\d+[\s]?(?:секунд|минут|часов|дней)"), # time
+]
+
+
+def extract_numbers_from_text(text: str) -> list[dict]:
+    """Extract all number/spec mentions from article text.
+
+    Returns list of {value, context, line_num} dicts.
+    Context is ~50 chars around the number for LLM validation.
+    """
+    results = []
+    lines = text.split("\n")
+
+    for line_num, line in enumerate(lines, 1):
+        for pattern in NUMBER_PATTERNS:
+            for match in pattern.finditer(line):
+                start = max(0, match.start() - 30)
+                end = min(len(line), match.end() + 30)
+                context = line[start:end].strip()
+                results.append({
+                    "value": match.group(),
+                    "context": context,
+                    "line": line_num,
+                })
+
+    # Deduplicate by value+context
+    seen = set()
+    unique = []
+    for r in results:
+        key = r["value"] + r["context"]
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+
+    return unique
+
+
+def build_number_validation_prompt(numbers: list[dict], source_facts: str) -> str:
+    """Build prompt for LLM to validate extracted numbers against source facts.
+
+    The LLM checks each number and marks it as VERIFIED or HALLUCINATED.
+    """
+    numbers_text = "\n".join(
+        f"{i+1}. \"{n['value']}\" — context: \"{n['context']}\""
+        for i, n in enumerate(numbers)
+    )
+
+    return (
+        f"Here are the SOURCE FACTS (trusted, verified):\n"
+        f"{source_facts}\n\n"
+        f"Here are NUMBERS found in the generated article:\n"
+        f"{numbers_text}\n\n"
+        f"For each number, check if it appears in the SOURCE FACTS.\n"
+        f"Respond with a list:\n"
+        f"1. VERIFIED — the number matches source facts\n"
+        f"2. HALLUCINATED — the number is NOT in source facts\n\n"
+        f"Format each line as: [number]. [VERIFIED/HALLUCINATED] — [reason]\n"
+        f"Be strict: if the exact number is not in the sources, mark HALLUCINATED."
+    )
 
 
 def build_llm_verification_prompt(text: str) -> str:

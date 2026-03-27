@@ -247,6 +247,86 @@ def rate_node(state: ArticleState) -> dict:
     }
 
 
+# --- Node: Validate Numbers ---
+
+def validate_numbers_node(state: ArticleState) -> dict:
+    """Extract numbers from draft, validate against source facts via LLM.
+
+    Appends hallucinated numbers to Rater's checklist so Improver can fix them.
+    """
+    draft = state.get("draft", "")
+    sources = state.get("sources", "")  # Research output (FACT-N list)
+    checklist = state.get("fact_check_report", "")
+    llm = _get_llm()
+
+    # 1. Extract numbers (regex, no LLM)
+    from app.factory.quality_gate import extract_numbers_from_text, build_number_validation_prompt
+    numbers = extract_numbers_from_text(draft)
+
+    if not numbers:
+        logger.info("[VALIDATE NUMBERS] No numbers found in draft")
+        return {
+            "status": "improving",
+            "log": _add_log(state, "[VALIDATE NUMBERS] No numbers to validate"),
+        }
+
+    logger.info("[VALIDATE NUMBERS] Found %d numbers, validating...", len(numbers))
+
+    # 2. LLM validates each number against source facts
+    prompt = build_number_validation_prompt(numbers, sources)
+
+    agent = create_reviewer(llm)
+    task = Task(
+        description=prompt,
+        expected_output="Numbered list: [n]. VERIFIED/HALLUCINATED — reason",
+        agent=agent,
+    )
+
+    crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=True)
+    result = str(crew.kickoff())
+
+    # 3. Extract hallucinated numbers
+    import re
+    hallucinated = []
+    for line in result.split("\n"):
+        if "HALLUCINATED" in line.upper():
+            hallucinated.append(line.strip())
+
+    # 4. If hallucinations found, ask another LLM instance for fix suggestions
+    if hallucinated:
+        logger.info("[VALIDATE NUMBERS] Found %d hallucinated, getting fix suggestions...", len(hallucinated))
+
+        fix_prompt = (
+            f"These numbers in the article are NOT from the original sources:\n"
+            + "\n".join(f"- {h}" for h in hallucinated)
+            + f"\n\nOriginal source facts:\n{sources}\n\n"
+            f"For each hallucinated number, suggest a fix:\n"
+            f"- If a correct number exists in sources, write: REPLACE [wrong] WITH [correct]\n"
+            f"- If no correct number exists, write: REMOVE [wrong], use 'по данным автора' instead\n"
+        )
+
+        fix_agent = create_reviewer(llm)
+        fix_task = Task(
+            description=fix_prompt,
+            expected_output="List of fixes: REPLACE/REMOVE for each hallucinated number",
+            agent=fix_agent,
+        )
+        fix_crew = Crew(agents=[fix_agent], tasks=[fix_task], process=Process.sequential, verbose=True)
+        fix_result = str(fix_crew.kickoff())
+
+        addition = "\n\nHALLUCINATED NUMBERS — FIX INSTRUCTIONS:\n" + fix_result
+        checklist += addition
+        logger.info("[VALIDATE NUMBERS] Fix suggestions generated")
+    else:
+        logger.info("[VALIDATE NUMBERS] All numbers verified")
+
+    return {
+        "fact_check_report": checklist,
+        "status": "improving",
+        "log": _add_log(state, f"[VALIDATE NUMBERS] {len(numbers)} checked, {len(hallucinated)} hallucinated"),
+    }
+
+
 # --- Node: Improve ---
 
 def improve_node(state: ArticleState) -> dict:
@@ -352,8 +432,8 @@ def publish_node(state: ArticleState) -> dict:
             # Clean artifacts before saving
             cleaned = clean_artifacts(article)
 
-            # Run quality gate
-            report = check_level1(cleaned)
+            # Run quality gate (min 3000 chars for factory articles)
+            report = check_level1(cleaned, min_length=3000)
             status = "ready" if report.passed else "quality_check"
 
             update_article(
