@@ -256,6 +256,112 @@ def extract_numbers_from_text(text: str) -> list[dict]:
     return unique
 
 
+def parse_fact_list(research_output: str) -> dict[int, str]:
+    """Parse Research output into {fact_number: fact_content} dict.
+
+    Research outputs: [FACT-1] MCU price: $200-300 (Source: url)
+    Returns: {1: "MCU price: $200-300 (Source: url)", ...}
+    """
+    facts = {}
+    for match in re.finditer(r"\[FACT-(\d+)\]\s*(.+?)(?=\[FACT-|\Z)", research_output, re.DOTALL):
+        num = int(match.group(1))
+        content = match.group(2).strip()
+        facts[num] = content
+    return facts
+
+
+def extract_numbers_from_string(s: str) -> set[str]:
+    """Extract all number-like tokens from a string for comparison."""
+    # Find prices, measurements, percentages, plain numbers
+    nums = set()
+    for m in re.finditer(r"\$[\d,.]+|\d+[\d,.]*\s*(?:USD|ГГц|МГц|ГБ|МБ|А|В|%|мм|см|кг|г)", s):
+        nums.add(re.sub(r"\s+", "", m.group()).lower())
+    for m in re.finditer(r"\b\d+(?:[.,]\d+)?\b", s):
+        nums.add(m.group())
+    return nums
+
+
+def validate_tagged_claims(text: str, research_output: str) -> tuple[str, list[str]]:
+    """Validate that numbers in tagged [FACT-N] claims match the actual FACT-N content.
+
+    If a line has [FACT-N] tag but the numbers don't match FACT-N content → remove.
+    If a line has numbers but no [FACT-N] tag → remove.
+    Returns (cleaned_text, removed_lines).
+    """
+    facts = parse_fact_list(research_output)
+    if not facts:
+        # Fallback to simple tag-presence check
+        return validate_facts_deterministic(text)
+
+    lines = text.split("\n")
+    cleaned = []
+    removed = []
+
+    # Regex for [FACT-N] or [источник] with nearby number
+    fact_ref = re.compile(r"\[FACT-(\d+)\]|\[источник\]")
+
+    HAS_NUMBER = re.compile(
+        r"\$[\d,.]+"
+        r"|\d+\s*(?:ГГц|МГц|GHz|MHz|ГБ|МБ|GB|MB|TB|Вт|кВт|W|kW"
+        r"|А|мА|A|mA|В|V|Гбит/с|Мбит/с|Gbps|Mbps|FPS|fps|Гц|Hz"
+        r"|мм|см|м|mm|cm|г|кг|g|kg|%"
+        r"|USD|руб|EUR|секунд|минут|часов|дней|млн|млрд|тонн)"
+        r"|\d{2,}",
+        re.IGNORECASE
+    )
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip safe lines
+        if (not stripped
+                or stripped.startswith("#")
+                or stripped.startswith("```")
+                or stripped.startswith("![")
+                or re.match(r"^-?\s*\[.*\]\(https?://", stripped)
+                or re.match(r"^\d+\.\s*\[", stripped)):
+            cleaned.append(line)
+            continue
+
+        # Does this line have numbers?
+        if not HAS_NUMBER.search(stripped):
+            cleaned.append(line)
+            continue
+
+        # Line has numbers — check if tagged AND content matches
+        fact_matches = fact_ref.findall(stripped)
+        if not fact_matches:
+            # No tag at all → hallucination
+            removed.append(f"NO TAG: {stripped[:100]}")
+            continue
+
+        # Has tag — verify content matches
+        line_numbers = extract_numbers_from_string(stripped)
+        tag_verified = False
+
+        for fact_num_str in fact_matches:
+            if not fact_num_str:  # [источник] without number
+                continue
+            fact_num = int(fact_num_str)
+            if fact_num in facts:
+                fact_numbers = extract_numbers_from_string(facts[fact_num])
+                # Check: do the numbers in this line overlap with FACT numbers?
+                overlap = line_numbers & fact_numbers
+                if overlap:
+                    tag_verified = True
+                    break
+
+        if tag_verified:
+            cleaned.append(line)
+        else:
+            removed.append(f"MISMATCH: {stripped[:100]}")
+            continue
+
+    result = "\n".join(cleaned)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result, removed
+
+
 def validate_facts_deterministic(text: str) -> tuple[str, list[str]]:
     """Deterministic fact validation: any sentence with a number MUST have [FACT-N] nearby.
 

@@ -258,10 +258,11 @@ def validate_numbers_node(state: ArticleState) -> dict:
     - Removed lines are logged and added to Rater's checklist for Improver
     """
     draft = state.get("draft", "")
+    sources = state.get("sources", "")  # Research output with [FACT-N] list
     checklist = state.get("fact_check_report", "")
 
-    from app.factory.quality_gate import validate_facts_deterministic
-    cleaned, removed = validate_facts_deterministic(draft)
+    from app.factory.quality_gate import validate_tagged_claims
+    cleaned, removed = validate_tagged_claims(draft, sources)
 
     if removed:
         logger.info("[VALIDATE] Removed %d untagged lines with numbers", len(removed))
@@ -389,9 +390,12 @@ def publish_node(state: ArticleState) -> dict:
             cleaned = clean_artifacts(article)
 
             # Final deterministic validation — catch any numbers Improver re-introduced
-            cleaned, removed = validate_facts_deterministic(cleaned)
+            sources = state.get("sources", "")
+            from app.factory.quality_gate import validate_tagged_claims
+            cleaned, removed = validate_tagged_claims(cleaned, sources)
             if removed:
-                logger.info("[PUBLISH] Final validator removed %d untagged lines", len(removed))
+                logger.info("[PUBLISH] Final validator removed %d lines: %s",
+                           len(removed), "; ".join(r[:60] for r in removed[:5]))
 
             # Run quality gate (min 3000 chars for factory articles)
             report = check_level1(cleaned, min_length=3000)
