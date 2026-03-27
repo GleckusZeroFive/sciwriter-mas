@@ -374,19 +374,22 @@ def improve_node(state: ArticleState) -> dict:
     llm = _get_llm()
 
     agent = create_reviewer(llm)
+    draft_len = len(draft)
     task = Task(
         description=(
-            f"Here is an article:\n\n{draft}\n\n"
+            f"Here is an article ({draft_len} characters):\n\n{draft}\n\n"
             f"Here is reviewer feedback:\n{checklist}\n\n"
-            f"Improve the article based on the feedback above.\n"
-            f"- Remove duplicate information across sections\n"
-            f"- Integrate quotes into text naturally (no standalone 'quotes' sections)\n"
-            f"- Remove sections that have no real content\n"
-            f"- Keep all specific facts, numbers, and source links\n"
-            f"- Output the full improved article in Markdown\n"
+            f"Improve the article based on the feedback.\n\n"
+            f"RULES:\n"
+            f"1. KEEP the article length — output must be at least {int(draft_len * 0.8)} characters\n"
+            f"2. Do NOT delete entire sections — fix them instead\n"
+            f"3. If a section has duplicate info, merge it into the other section (keep the content)\n"
+            f"4. Keep all facts, numbers, and source links\n"
+            f"5. Integrate quotes naturally into surrounding text\n"
+            f"6. Output the full improved article in Markdown\n"
         ),
         expected_output=(
-            "The full improved article in Markdown format. Nothing else."
+            f"The full improved article in Markdown, at least {int(draft_len * 0.8)} characters."
         ),
         agent=agent,
     )
