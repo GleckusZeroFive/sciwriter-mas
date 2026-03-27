@@ -98,6 +98,28 @@ def ensure_ollama_alive() -> bool:
         return False
 
 
+def _check_gpu_memory():
+    """Log GPU memory usage via nvidia-smi."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.free,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            parts = result.stdout.strip().split(", ")
+            if len(parts) == 3:
+                used, free, total = int(parts[0]), int(parts[1]), int(parts[2])
+                pct = round(used / total * 100)
+                logger.info("[GPU] VRAM: %d/%d MB (%d%% used, %d MB free)",
+                           used, total, pct, free)
+                if free < 1000:
+                    logger.warning("[GPU] LOW VRAM: only %d MB free! May cause OOM or CPU offload.", free)
+    except Exception:
+        pass  # nvidia-smi not available
+
+
 def collect_all() -> int:
     """Run all available collectors. Returns total new items inserted."""
     collectors = [
@@ -195,6 +217,7 @@ def generate_one(preset: str = "habr") -> int | None:
         except Exception as e:
             logger.warning("[GENERATE] Ollama warmup failed: %s", e)
 
+        _check_gpu_memory()
         logger.info("[GENERATE] Starting pipeline for article id=%d...", article_id)
         start_time = time.time()
 

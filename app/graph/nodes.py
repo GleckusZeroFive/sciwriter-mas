@@ -26,7 +26,8 @@ def _get_llm() -> LLM:
         base_url=settings.llm_base_url.replace("/v1", ""),
         temperature=settings.llm_temperature,
         max_tokens=settings.llm_max_tokens,
-        timeout=300,  # 5 min timeout per LLM call, prevents hanging on Ollama idle unload
+        timeout=300,  # 5 min timeout per LLM call
+        num_ctx=3072,  # limit context to save VRAM (8GB GPU, model=6GB, leaves 2GB for KV-cache)
     )
 
 
