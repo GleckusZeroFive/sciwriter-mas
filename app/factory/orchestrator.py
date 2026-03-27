@@ -112,22 +112,28 @@ def generate_one(preset: str = "habr") -> int | None:
 
         logger.info("[GENERATE] Pipeline completed in %.1fs for article id=%d", elapsed, article_id)
 
-        # Update DB with result
-        final_article = result.get("final_article", "")
-        if final_article:
-            cleaned = clean_artifacts(final_article)
-            report = check_level1(cleaned)
+        # Check if publish_node already saved the article (factory mode)
+        # If so, don't overwrite with unvalidated content
+        existing = get_article(article_id)
+        if existing and existing.get("content_ru") and existing.get("status") in ("ready", "quality_check"):
+            logger.info("[GENERATE] Article already saved by publish_node, skipping orchestrator update")
+        else:
+            # Fallback: save from pipeline result
+            final_article = result.get("final_article", "")
+            if final_article:
+                cleaned = clean_artifacts(final_article)
+                report = check_level1(cleaned, min_length=3000)
 
-            update_article(
-                article_id,
-                content_ru=cleaned,
-                title_ru=cleaned.split("\n")[0].lstrip("# ").strip()[:200],
-                char_count=len(cleaned),
-                fact_check_score=result.get("fact_check_score"),
-                status="ready" if report.passed else "failed",
-                generation_log=result.get("log", []),
-                error="; ".join(report.issues) if not report.passed else None,
-            )
+                update_article(
+                    article_id,
+                    content_ru=cleaned,
+                    title_ru=cleaned.split("\n")[0].lstrip("# ").strip()[:200],
+                    char_count=len(cleaned),
+                    fact_check_score=result.get("fact_check_score"),
+                    status="ready" if report.passed else "failed",
+                    generation_log=result.get("log", []),
+                    error="; ".join(report.issues) if not report.passed else None,
+                )
 
             if report.passed:
                 logger.info("[GENERATE] Article id=%d ready (%d chars)", article_id, len(cleaned))
