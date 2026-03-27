@@ -140,63 +140,115 @@ def research_node(state: ArticleState) -> dict:
     }
 
 
-# --- Node: Write ---
+# --- Node: Write (sectional approach) ---
 
 def write_node(state: ArticleState) -> dict:
-    """Writer agent generates article draft from sources."""
+    """Sectional writer: Plan → Write each section → Assemble.
+
+    Step 1 (Planner): LLM splits facts into 5-7 sections
+    Step 2 (Section Writer): LLM writes each section from its assigned facts (200-400 words)
+    Step 3 (Assembler): Python joins sections into one article
+
+    This keeps each LLM call small and grounded — 8B model can't hallucinate
+    when writing 200 words from 2-3 specific facts.
+    """
     topic = state["topic"]
     sources = state.get("sources", "")
     preset = _load_preset(state.get("preset", "habr"))
-    revision = state.get("revision_count", 0)
-    fact_report = state.get("fact_check_report", "")
     llm = _get_llm()
 
-    revision_context = ""
-    if revision > 0 and fact_report:
-        revision_context = (
-            f"\n\nThis is revision #{revision}. "
-            f"Previous fact-check found these issues:\n{fact_report}\n"
-            f"Fix all issues while keeping the article structure."
-        )
-
+    # --- Step 1: Planner ---
+    logger.info("[WRITE] Step 1: Planning sections...")
     agent = create_writer(llm)
-    task = Task(
+    plan_task = Task(
         description=(
-            f"Write an article on: '{topic}'\n\n"
-            f"Format: {preset.get('format_name', 'Habr technical article')}\n"
-            f"Style: {preset.get('style', 'Technical, with code examples where relevant')}\n"
-            f"Target length: {preset.get('target_length', '8000-15000 characters')}\n"
-            f"Language: Russian\n\n"
-            f"CRITICAL RULES:\n"
-            f"1. Use ONLY [FACT-N] items from the research brief. Reference them as [FACT-N] in text.\n"
-            f"2. NEVER invent numbers, specs, prices, or measurements not in [FACT-N] items.\n"
-            f"3. If you need a number but no [FACT-N] provides it, write 'по данным автора' without a number.\n"
-            f"4. Code examples ONLY if a [FACT-N] contains code. Otherwise no code.\n"
-            f"5. Do NOT add sections about topics not covered by [FACT-N] items.\n"
-            f"6. Do NOT add Meta Description or Keywords sections.\n"
-            f"7. Each fact reference: [FACT-N](source url).\n\n"
-            f"Sources to use:\n{sources}\n"
-            f"{revision_context}\n\n"
-            f"Structure requirements:\n{preset.get('structure', '- Title, Introduction, Main sections, Conclusion')}\n"
+            f"Topic: '{topic}'\n"
+            f"Available facts:\n{sources}\n\n"
+            f"Create a plan for an article with 5-7 sections.\n"
+            f"For each section, write one line:\n"
+            f"SECTION: [title] | FACTS: [comma-separated FACT numbers to use]\n\n"
+            f"Example:\n"
+            f"SECTION: Введение | FACTS: 1, 2\n"
+            f"SECTION: Технические характеристики | FACTS: 3, 4, 5\n"
+            f"SECTION: Проблемы и решения | FACTS: 6, 7\n"
+            f"SECTION: Заключение | FACTS: 1\n\n"
+            f"Rules:\n"
+            f"- Every FACT must appear in at least one section\n"
+            f"- Each section uses 1-3 facts\n"
+            f"- Write section titles in Russian\n"
+            f"- Do NOT add sections without facts (no 'Future work', no 'Applications')\n"
         ),
-        expected_output=(
-            f"A complete article in Markdown format, "
-            f"{preset.get('target_length', '8000-15000 characters')}. "
-            f"Every claim must be backed by specific data from sources. "
-            f"No Meta Description or Keywords sections."
-        ),
+        expected_output="List of sections with FACT numbers, one per line.",
         agent=agent,
     )
+    plan_crew = Crew(agents=[agent], tasks=[plan_task], process=Process.sequential, verbose=True)
+    plan_result = str(plan_crew.kickoff())
 
-    crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=True)
-    result = crew.kickoff()
+    # Parse plan
+    import re
+    sections = []
+    for line in plan_result.split("\n"):
+        match = re.match(r"SECTION:\s*(.+?)\s*\|\s*FACTS?:\s*(.+)", line, re.IGNORECASE)
+        if match:
+            title = match.group(1).strip()
+            fact_nums = match.group(2).strip()
+            sections.append({"title": title, "facts": fact_nums})
 
+    if not sections:
+        # Fallback: simple 3-section plan
+        logger.warning("[WRITE] Could not parse plan, using fallback")
+        sections = [
+            {"title": "Введение", "facts": "1, 2"},
+            {"title": "Основная часть", "facts": "3, 4, 5"},
+            {"title": "Заключение", "facts": "1"},
+        ]
+
+    logger.info("[WRITE] Plan: %d sections", len(sections))
+
+    # --- Step 2: Write each section ---
+    section_texts = []
+    for i, sec in enumerate(sections):
+        logger.info("[WRITE] Step 2.%d: Writing '%s' (facts: %s)", i+1, sec['title'], sec['facts'])
+
+        sec_agent = create_writer(llm)
+        sec_task = Task(
+            description=(
+                f"Write ONE section of an article.\n\n"
+                f"Section title: {sec['title']}\n"
+                f"Use ONLY these facts:\n"
+                f"{sources}\n"
+                f"(focus on facts: {sec['facts']})\n\n"
+                f"Rules:\n"
+                f"- Write 200-400 words in Russian\n"
+                f"- Use ONLY information from the facts above\n"
+                f"- Do NOT invent any numbers, names, or details\n"
+                f"- If you don't have enough facts, write less — don't pad\n"
+                f"- Do NOT write a title — just the body text\n"
+                f"- Reference sources as [источник](url)\n"
+            ),
+            expected_output="Section body text in Russian, 200-400 words. No title.",
+            agent=sec_agent,
+        )
+        sec_crew = Crew(agents=[sec_agent], tasks=[sec_task], process=Process.sequential, verbose=True)
+        sec_result = str(sec_crew.kickoff())
+        section_texts.append({"title": sec["title"], "text": sec_result})
+
+    # --- Step 3: Assemble (pure Python) ---
+    logger.info("[WRITE] Step 3: Assembling %d sections", len(section_texts))
+    article_parts = [f"# {topic}\n"]
+    for sec in section_texts:
+        article_parts.append(f"\n## {sec['title']}\n")
+        article_parts.append(sec["text"].strip())
+        article_parts.append("")
+
+    draft = "\n".join(article_parts)
     version = state.get("draft_version", 0) + 1
+
     return {
-        "draft": str(result),
+        "draft": draft,
         "draft_version": version,
-        "status": "fact_checking",
-        "log": _add_log(state, f"[WRITE] Draft v{version} generated ({len(str(result))} chars)"),
+        "status": "rating",
+        "log": _add_log(state, f"[WRITE] Sectional draft v{version}: {len(sections)} sections, {len(draft)} chars"),
     }
 
 
