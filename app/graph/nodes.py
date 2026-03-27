@@ -27,7 +27,6 @@ def _get_llm() -> LLM:
         temperature=settings.llm_temperature,
         max_tokens=settings.llm_max_tokens,
         timeout=300,  # 5 min timeout per LLM call, prevents hanging on Ollama idle unload
-        num_retries=2,
     )
 
 
