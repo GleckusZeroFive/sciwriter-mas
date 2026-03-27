@@ -313,13 +313,19 @@ def validate_tagged_claims(text: str, research_output: str) -> tuple[str, list[s
     for line in lines:
         stripped = line.strip()
 
-        # Skip safe lines
+        # Skip structurally safe lines (no content to validate)
         if (not stripped
                 or stripped.startswith("#")
                 or stripped.startswith("```")
-                or stripped.startswith("![")
-                or re.match(r"^-?\s*\[.*\]\(https?://", stripped)
-                or re.match(r"^\d+\.\s*\[", stripped)):
+                or stripped.startswith("![")):
+            cleaned.append(line)
+            continue
+
+        # Pure link lines (ONLY a link, no surrounding text with numbers) — skip
+        if re.match(r"^-?\s*\[[\w\s]+\]\(https?://[^)]+\)\s*$", stripped):
+            cleaned.append(line)
+            continue
+        if re.match(r"^\d+\.\s*\[[\w\s]+\]\(https?://[^)]+\)\s*$", stripped):
             cleaned.append(line)
             continue
 
