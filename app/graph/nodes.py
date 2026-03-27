@@ -247,83 +247,39 @@ def rate_node(state: ArticleState) -> dict:
     }
 
 
-# --- Node: Validate Numbers ---
+# --- Node: Validate Numbers (deterministic, no LLM) ---
 
 def validate_numbers_node(state: ArticleState) -> dict:
-    """Extract numbers from draft, validate against source facts via LLM.
+    """Deterministic fact validation: remove any sentence with numbers but no [FACT-N] tag.
 
-    Appends hallucinated numbers to Rater's checklist so Improver can fix them.
+    This is pure Python, no LLM call. Rules:
+    - Any line with a number/spec MUST have a [FACT-N] tag
+    - If it doesn't → the line is removed (hallucination)
+    - Removed lines are logged and added to Rater's checklist for Improver
     """
     draft = state.get("draft", "")
-    sources = state.get("sources", "")  # Research output (FACT-N list)
     checklist = state.get("fact_check_report", "")
-    llm = _get_llm()
 
-    # 1. Extract numbers (regex, no LLM)
-    from app.factory.quality_gate import extract_numbers_from_text, build_number_validation_prompt
-    numbers = extract_numbers_from_text(draft)
+    from app.factory.quality_gate import validate_facts_deterministic
+    cleaned, removed = validate_facts_deterministic(draft)
 
-    if not numbers:
-        logger.info("[VALIDATE NUMBERS] No numbers found in draft")
-        return {
-            "status": "improving",
-            "log": _add_log(state, "[VALIDATE NUMBERS] No numbers to validate"),
-        }
-
-    logger.info("[VALIDATE NUMBERS] Found %d numbers, validating...", len(numbers))
-
-    # 2. LLM validates each number against source facts
-    prompt = build_number_validation_prompt(numbers, sources)
-
-    agent = create_reviewer(llm)
-    task = Task(
-        description=prompt,
-        expected_output="Numbered list: [n]. VERIFIED/HALLUCINATED — reason",
-        agent=agent,
-    )
-
-    crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=True)
-    result = str(crew.kickoff())
-
-    # 3. Extract hallucinated numbers
-    import re
-    hallucinated = []
-    for line in result.split("\n"):
-        if "HALLUCINATED" in line.upper():
-            hallucinated.append(line.strip())
-
-    # 4. If hallucinations found, ask another LLM instance for fix suggestions
-    if hallucinated:
-        logger.info("[VALIDATE NUMBERS] Found %d hallucinated, getting fix suggestions...", len(hallucinated))
-
-        fix_prompt = (
-            f"These numbers in the article are NOT from the original sources:\n"
-            + "\n".join(f"- {h}" for h in hallucinated)
-            + f"\n\nOriginal source facts:\n{sources}\n\n"
-            f"For each hallucinated number, suggest a fix:\n"
-            f"- If a correct number exists in sources, write: REPLACE [wrong] WITH [correct]\n"
-            f"- If no correct number exists, write: REMOVE [wrong], use 'по данным автора' instead\n"
+    if removed:
+        logger.info("[VALIDATE] Removed %d untagged lines with numbers", len(removed))
+        # Add to checklist so Improver knows what was removed
+        addition = (
+            "\n\nREMOVED LINES (contained numbers without [FACT-N] source tag):\n"
+            + "\n".join(f"- {r[:100]}" for r in removed)
+            + "\n\nDo NOT re-add these claims. Only use facts from [FACT-N] tags."
         )
-
-        fix_agent = create_reviewer(llm)
-        fix_task = Task(
-            description=fix_prompt,
-            expected_output="List of fixes: REPLACE/REMOVE for each hallucinated number",
-            agent=fix_agent,
-        )
-        fix_crew = Crew(agents=[fix_agent], tasks=[fix_task], process=Process.sequential, verbose=True)
-        fix_result = str(fix_crew.kickoff())
-
-        addition = "\n\nHALLUCINATED NUMBERS — FIX INSTRUCTIONS:\n" + fix_result
         checklist += addition
-        logger.info("[VALIDATE NUMBERS] Fix suggestions generated")
     else:
-        logger.info("[VALIDATE NUMBERS] All numbers verified")
+        logger.info("[VALIDATE] All numbered claims are tagged")
 
     return {
+        "draft": cleaned,  # Replace draft with cleaned version
         "fact_check_report": checklist,
         "status": "improving",
-        "log": _add_log(state, f"[VALIDATE NUMBERS] {len(numbers)} checked, {len(hallucinated)} hallucinated"),
+        "log": _add_log(state, f"[VALIDATE] {len(removed)} untagged lines removed (deterministic)"),
     }
 
 

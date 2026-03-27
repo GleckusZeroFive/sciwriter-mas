@@ -256,28 +256,66 @@ def extract_numbers_from_text(text: str) -> list[dict]:
     return unique
 
 
-def build_number_validation_prompt(numbers: list[dict], source_facts: str) -> str:
-    """Build prompt for LLM to validate extracted numbers against source facts.
+def validate_facts_deterministic(text: str) -> tuple[str, list[str]]:
+    """Deterministic fact validation: any sentence with a number MUST have [FACT-N] nearby.
 
-    The LLM checks each number and marks it as VERIFIED or HALLUCINATED.
+    If a sentence contains a number/spec but no [FACT-N] tag, the sentence is removed.
+    Returns (cleaned_text, list_of_removed_sentences).
+
+    This is the core anti-hallucination mechanism:
+    - Research extracts facts as [FACT-N]
+    - Writer must tag every claim with [FACT-N]
+    - This function enforces it: no tag = hallucination = removed
     """
-    numbers_text = "\n".join(
-        f"{i+1}. \"{n['value']}\" — context: \"{n['context']}\""
-        for i, n in enumerate(numbers)
+    # Pattern: any number-like content (digits with units, prices, percentages, specs)
+    HAS_NUMBER = re.compile(
+        r"\$[\d,.]+"           # prices
+        r"|\d+\s*(?:ГГц|МГц|GHz|MHz|ГБ|МБ|GB|MB|TB|Вт|кВт|W|kW"
+        r"|А|мА|A|mA|В|V|Гбит/с|Мбит/с|Gbps|Mbps|FPS|fps|Гц|Hz"
+        r"|мм|см|м|mm|cm|г|кг|g|kg|%"
+        r"|USD|руб|EUR|секунд|минут|часов|дней|млн|млрд|тонн)"
+        r"|\d{2,}",           # any number with 2+ digits
+        re.IGNORECASE
     )
 
-    return (
-        f"Here are the SOURCE FACTS (trusted, verified):\n"
-        f"{source_facts}\n\n"
-        f"Here are NUMBERS found in the generated article:\n"
-        f"{numbers_text}\n\n"
-        f"For each number, check if it appears in the SOURCE FACTS.\n"
-        f"Respond with a list:\n"
-        f"1. VERIFIED — the number matches source facts\n"
-        f"2. HALLUCINATED — the number is NOT in source facts\n\n"
-        f"Format each line as: [number]. [VERIFIED/HALLUCINATED] — [reason]\n"
-        f"Be strict: if the exact number is not in the sources, mark HALLUCINATED."
-    )
+    # Pattern: [FACT-N] tag nearby
+    HAS_FACT_TAG = re.compile(r"\[FACT-\d+\]", re.IGNORECASE)
+
+    lines = text.split("\n")
+    cleaned_lines = []
+    removed = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip headings, empty lines, list markers without numbers, code blocks
+        if (not stripped
+                or stripped.startswith("#")
+                or stripped.startswith("```")
+                or stripped.startswith("![")
+                or stripped.startswith("[FACT-")
+                or stripped.startswith("- **") and not HAS_NUMBER.search(stripped)):
+            cleaned_lines.append(line)
+            continue
+
+        # Check: does this line have a number?
+        if HAS_NUMBER.search(stripped):
+            # Does it also have a [FACT-N] tag?
+            if HAS_FACT_TAG.search(stripped):
+                cleaned_lines.append(line)  # Tagged = trusted
+            else:
+                # Untagged number = potential hallucination → remove
+                removed.append(stripped)
+                # Replace with empty line (don't break structure)
+                continue
+        else:
+            cleaned_lines.append(line)
+
+    result = "\n".join(cleaned_lines)
+    # Clean up excessive empty lines from removals
+    result = re.sub(r"\n{3,}", "\n\n", result)
+
+    return result, removed
 
 
 def build_llm_verification_prompt(text: str) -> str:
