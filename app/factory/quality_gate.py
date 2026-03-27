@@ -131,6 +131,26 @@ def check_level1(
         report.issues.append(f"Duplicate paragraphs found: {dupes}")
         report.passed = False
 
+    # --- Cyrillic in URLs ---
+    urls = re.findall(r"https?://\S+", text)
+    cyrillic_url_re = re.compile(r"[\u0400-\u04ff]")
+    for url in urls:
+        if cyrillic_url_re.search(url):
+            report.issues.append(f"Cyrillic character in URL: {url[:80]}")
+            report.passed = False
+
+    # --- Repeated facts (same sentence structure appearing 3+ times) ---
+    sentences = re.split(r"[.!?]\s", text)
+    sentence_starts = {}
+    for s in sentences:
+        words = s.strip().split()[:4]
+        if len(words) >= 4:
+            key = " ".join(words).lower()
+            sentence_starts[key] = sentence_starts.get(key, 0) + 1
+    for key, count in sentence_starts.items():
+        if count >= 3:
+            report.issues.append(f"Repetitive sentence pattern (x{count}): '{key}...'")
+
     return report
 
 
