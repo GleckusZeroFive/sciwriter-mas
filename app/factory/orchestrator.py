@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 def ensure_ollama_alive() -> bool:
     """Check if Ollama model is loaded. If not, reload it with keep_alive=-1.
+    Also monitors VRAM usage and logs warnings.
     Returns True if model is ready."""
     import httpx
     base = settings.llm_base_url.replace("/v1", "")
@@ -37,15 +38,34 @@ def ensure_ollama_alive() -> bool:
     try:
         # Check loaded models
         resp = httpx.get(f"{base}/api/ps", timeout=5)
-        models = resp.json().get("models", [])
-        loaded = [m["name"] for m in models]
+        data = resp.json()
+        models = data.get("models", [])
 
+        for m in models:
+            name = m.get("name", "")
+            size_vram = m.get("size_vram", 0)
+            size_total = m.get("size", 0)
+
+            if size_total > 0 and size_vram < size_total:
+                # Model partially on CPU — VRAM overflow
+                cpu_pct = round((1 - size_vram / size_total) * 100)
+                logger.warning(
+                    "[OLLAMA] VRAM OVERFLOW: %s — %d%% offloaded to CPU "
+                    "(VRAM: %.1f GB / Total: %.1f GB). "
+                    "Generation will be slow!",
+                    name, cpu_pct,
+                    size_vram / 1e9, size_total / 1e9,
+                )
+            elif size_vram > 0:
+                logger.info("[OLLAMA] %s loaded: %.1f GB VRAM", name, size_vram / 1e9)
+
+        loaded = [m["name"] for m in models]
         if settings.llm_model in loaded or any(settings.llm_model in m for m in loaded):
             return True
 
         # Model not loaded — reload
-        logger.warning("[OLLAMA] Model not loaded, reloading %s...", settings.llm_model)
-        httpx.post(
+        logger.warning("[OLLAMA] Model %s not loaded, reloading...", settings.llm_model)
+        resp = httpx.post(
             f"{base}/api/generate",
             json={
                 "model": settings.llm_model,
@@ -55,7 +75,22 @@ def ensure_ollama_alive() -> bool:
             },
             timeout=120,
         )
-        logger.info("[OLLAMA] Model reloaded successfully")
+
+        # Check if model loaded on GPU or fell back to CPU
+        ps_resp = httpx.get(f"{base}/api/ps", timeout=5)
+        for m in ps_resp.json().get("models", []):
+            size_vram = m.get("size_vram", 0)
+            size_total = m.get("size", 0)
+            if size_total > 0 and size_vram < size_total * 0.9:
+                cpu_pct = round((1 - size_vram / size_total) * 100)
+                logger.warning(
+                    "[OLLAMA] Model loaded but %d%% on CPU — VRAM full! "
+                    "Consider closing other GPU apps or using a smaller model.",
+                    cpu_pct,
+                )
+            else:
+                logger.info("[OLLAMA] Model reloaded successfully (full GPU)")
+
         return True
 
     except Exception as e:
