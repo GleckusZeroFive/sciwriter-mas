@@ -16,6 +16,7 @@ from app.factory.db import (
     insert_raw_items_batch,
     create_article,
     update_article,
+    get_article,
     mark_items_processed,
     get_articles_by_status,
     get_factory_stats,
