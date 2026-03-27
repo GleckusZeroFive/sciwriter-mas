@@ -19,6 +19,7 @@ from app.graph.state import ArticleState
 from app.graph.nodes import (
     research_node,
     write_node,
+    enrich_node,
     rate_node,
     validate_numbers_node,
     improve_node,
@@ -52,15 +53,17 @@ def build_workflow() -> StateGraph:
     # Add nodes
     graph.add_node("research", research_node)
     graph.add_node("write", write_node)
+    graph.add_node("enrich", enrich_node)
     graph.add_node("rate", rate_node)
     graph.add_node("validate_numbers", validate_numbers_node)
     graph.add_node("improve", improve_node)
     graph.add_node("final_rate", final_rate_node)
     graph.add_node("publish", publish_node)
 
-    # Linear: research → write → rate → validate_numbers → improve → final_rate
+    # Linear: research → write → enrich → rate → validate_numbers → improve → final_rate
     graph.add_edge("research", "write")
-    graph.add_edge("write", "rate")
+    graph.add_edge("write", "enrich")
+    graph.add_edge("enrich", "rate")
     graph.add_edge("rate", "validate_numbers")
     graph.add_edge("validate_numbers", "improve")
     graph.add_edge("improve", "final_rate")

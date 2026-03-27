@@ -251,6 +251,30 @@ def write_node(state: ArticleState) -> dict:
     }
 
 
+# --- Node: Enrich (verify entities via web search, no LLM) ---
+
+def enrich_node(state: ArticleState) -> dict:
+    """Verify technical entities (chip names, protocols, specs) via DuckDuckGo.
+
+    Pure Python + web search, no LLM call.
+    Confirmed entities stay, unverified/contradicted lines are removed.
+    """
+    draft = state.get("draft", "")
+    topic = state.get("topic", "")
+
+    from app.factory.fact_enricher import enrich_article
+    cleaned, log = enrich_article(draft, topic)
+
+    confirmed = sum(1 for v in log if v["status"] == "confirmed")
+    removed = sum(1 for v in log if v["status"] != "confirmed")
+
+    return {
+        "draft": cleaned,
+        "status": "rating",
+        "log": _add_log(state, f"[ENRICH] {len(log)} entities checked: {confirmed} confirmed, {removed} removed"),
+    }
+
+
 # --- Node: Rate ---
 
 def rate_node(state: ArticleState) -> dict:
