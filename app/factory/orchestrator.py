@@ -93,9 +93,10 @@ def generate_one(preset: str = "habr") -> int | None:
         for item in bundle.items
     ]
 
-    # 5. Run the pipeline
+    # 5. Run the pipeline with timeout
     try:
         from app.graph.workflow import create_pipeline
+        import threading
 
         workflow = create_pipeline()
         initial_state = {
@@ -108,19 +109,46 @@ def generate_one(preset: str = "habr") -> int | None:
 
         logger.info("[GENERATE] Starting pipeline for article id=%d...", article_id)
         start_time = time.time()
-        result = workflow.invoke(initial_state)
-        elapsed = time.time() - start_time
 
+        # Run pipeline with timeout (15 min max)
+        result = [None]
+        error_box = [None]
+
+        def _run():
+            try:
+                result[0] = workflow.invoke(initial_state)
+            except Exception as e:
+                error_box[0] = e
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        thread.join(timeout=900)  # 15 min
+
+        if thread.is_alive():
+            logger.error("[GENERATE] Pipeline TIMEOUT (15 min) for article id=%d", article_id)
+            # Check if publish_node managed to save before timeout
+            existing = get_article(article_id)
+            if existing and existing.get("content_ru"):
+                logger.info("[GENERATE] Partial save found, marking as ready")
+                update_article(article_id, status="ready")
+                return article_id
+            else:
+                update_article(article_id, status="failed", error="Pipeline timeout (15 min)")
+                return None
+
+        if error_box[0]:
+            raise error_box[0]
+
+        elapsed = time.time() - start_time
         logger.info("[GENERATE] Pipeline completed in %.1fs for article id=%d", elapsed, article_id)
 
         # Check if publish_node already saved the article (factory mode)
-        # If so, don't overwrite with unvalidated content
         existing = get_article(article_id)
         if existing and existing.get("content_ru") and existing.get("status") in ("ready", "quality_check"):
             logger.info("[GENERATE] Article already saved by publish_node, skipping orchestrator update")
         else:
             # Fallback: save from pipeline result
-            final_article = result.get("final_article", "")
+            final_article = result[0].get("final_article", "") if result[0] else ""
             if final_article:
                 cleaned = clean_artifacts(final_article)
                 report = check_level1(cleaned, min_length=3000)
@@ -130,17 +158,17 @@ def generate_one(preset: str = "habr") -> int | None:
                     content_ru=cleaned,
                     title_ru=cleaned.split("\n")[0].lstrip("# ").strip()[:200],
                     char_count=len(cleaned),
-                    fact_check_score=result.get("fact_check_score"),
+                    fact_check_score=result[0].get("fact_check_score") if result[0] else None,
                     status="ready" if report.passed else "failed",
-                    generation_log=result.get("log", []),
+                    generation_log=result[0].get("log", []) if result[0] else [],
                     error="; ".join(report.issues) if not report.passed else None,
                 )
 
-            if report.passed:
-                logger.info("[GENERATE] Article id=%d ready (%d chars)", article_id, len(cleaned))
-            else:
-                logger.warning("[GENERATE] Article id=%d failed quality gate: %s",
-                               article_id, "; ".join(report.issues))
+                if report.passed:
+                    logger.info("[GENERATE] Article id=%d ready (%d chars)", article_id, len(cleaned))
+                else:
+                    logger.warning("[GENERATE] Article id=%d failed quality gate: %s",
+                                   article_id, "; ".join(report.issues))
 
         return article_id
 

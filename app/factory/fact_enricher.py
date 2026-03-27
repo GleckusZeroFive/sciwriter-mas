@@ -18,16 +18,20 @@ logger = logging.getLogger(__name__)
 
 # Patterns for extractable technical entities
 ENTITY_PATTERNS = [
-    # Processor/chip names: ARM Cortex-A55, NVIDIA Tegra, Intel i7, M2 Ultra
-    re.compile(r"\b(ARM\s+Cortex[\w-]*|NVIDIA\s+\w+|Intel\s+\w[\w-]*|Qualcomm\s+\w+|AMD\s+\w+|M\d\s+\w+|Snapdragon\s+\d+|Tegra\s+\w+)", re.IGNORECASE),
-    # Specific chip models: MAX16932, LM2596, etc.
-    re.compile(r"\b([A-Z]{2,}\d{3,}[A-Z]*(?:/[\w+]+)?)\b"),
-    # Protocols/interfaces: MIPI DSI, PCIe, LVDS, JTAG, UART
-    re.compile(r"\b(MIPI\s+DSI|PCIe|LVDS|JTAG|UART|USB-C|HDMI|NVMe|OpenOCD)\b", re.IGNORECASE),
+    # Processor/chip names (EN + RU context)
+    re.compile(r"\b(ARM\s+Cortex[\w-]*|NVIDIA\s+\w+|Intel\s+\w[\w-]*|Qualcomm\s+\w+|AMD\s+\w+|M\d\s+\w+|Snapdragon\s+\d+|Tegra\s+\w+|Apple\s+[A-Z]\d+)", re.IGNORECASE),
+    # Specific chip models: MAX16932, LM2596, Rosenberger 99K10D, etc.
+    re.compile(r"\b([A-Z]{2,}\d{3,}[\w/+-]*)\b"),
+    # Protocols/interfaces
+    re.compile(r"\b(MIPI\s+DSI|PCIe|LVDS|JTAG|UART|USB-C|HDMI|NVMe|OpenOCD|CAN\s+bus|SPI|I2C|Ethernet|Rosenberger)\b", re.IGNORECASE),
     # Display specs: 1440x900, 1920x1080, etc.
     re.compile(r"\b(\d{3,4}\s*[xх×]\s*\d{3,4})\b"),
-    # Memory/storage specs with specific values: 64 ГБ NAND, 4 ГБ RAM
-    re.compile(r"\b(\d+\s*(?:ГБ|МБ|GB|MB|TB)\s+(?:RAM|NAND|SSD|ROM|DDR\d?|LPDDR\d?))\b", re.IGNORECASE),
+    # Memory/storage specs: 64 ГБ NAND, 4 ГБ RAM, 2 ТБ SSD
+    re.compile(r"\b(\d+\s*(?:ГБ|МБ|ТБ|GB|MB|TB)\s+(?:RAM|NAND|SSD|ROM|DDR\d?|LPDDR\d?|NVMe|оперативной))\b", re.IGNORECASE),
+    # Processor frequency: 2.4 ГГц, 1.8 GHz
+    re.compile(r"\b(\d+[.,]\d+\s*(?:ГГц|GHz|МГц|MHz))\b", re.IGNORECASE),
+    # Russian tech terms that might be hallucinated
+    re.compile(r"(?:процессор|чип|микросхема|контроллер)\s+([A-Z][\w-]+\s*[\w-]*)", re.IGNORECASE),
 ]
 
 
