@@ -169,6 +169,29 @@ def clean_artifacts(text: str) -> str:
     text = re.sub(r"##\s*Meta\s*Description\s*\n.*?(?=\n##|\n---|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r"##\s*Keywords?\s*\n.*?(?=\n##|\n---|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
 
+    # Clean [FACT-N] tags: replace [FACT-N](url) with just [source](url)
+    text = re.sub(r"\[FACT-\d+\]\(([^)]+)\)", r"[источник](\1)", text)
+    # Remove standalone [FACT-N] references without URLs
+    text = re.sub(r"\[FACT-\d+\]", "", text)
+
+    # Fix Cyrillic characters leaked into URLs
+    cyrillic_in_url = re.compile(r"(https?://\S*?)([\u0400-\u04ff]+)(\S*)")
+    def _fix_cyrillic_url(m):
+        # Map common Cyrillic→Latin lookalikes
+        cyr_to_lat = {"а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y",
+                       "х": "x", "А": "A", "Е": "E", "О": "O", "Р": "P", "С": "C",
+                       "л": "l", "н": "n", "т": "t", "и": "i", "к": "k", "м": "m"}
+        fixed = ""
+        for ch in m.group(2):
+            fixed += cyr_to_lat.get(ch, "")
+        return m.group(1) + fixed + m.group(3)
+
+    for _ in range(5):  # multiple passes for multiple Cyrillic chars in one URL
+        new_text = cyrillic_in_url.sub(_fix_cyrillic_url, text)
+        if new_text == text:
+            break
+        text = new_text
+
     # Remove Changelog section (editor artifact)
     text = re.sub(r"##\s*Changelog\s*\n.*?(?=\n##|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
 
