@@ -14,6 +14,7 @@ from app.agents.researcher import create_researcher
 from app.agents.writer import create_writer
 from app.agents.fact_checker import create_fact_checker
 from app.agents.editor import create_editor
+from app.agents.reviewer import create_reviewer
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +47,68 @@ def _add_log(state: dict, message: str) -> list[str]:
 # --- Node: Research ---
 
 def research_node(state: ArticleState) -> dict:
-    """Researcher agent finds sources on the topic."""
+    """Researcher agent finds sources on the topic.
+
+    Two modes:
+    - Factory mode (pre_sources populated): summarize pre-collected data, skip web search
+    - Normal mode: search the web and knowledge base
+    """
     topic = state["topic"]
     preset = _load_preset(state.get("preset", "habr"))
+    pre_sources = state.get("pre_sources", [])
     llm = _get_llm()
 
+    # Factory mode: use pre-collected sources from DB
+    if pre_sources:
+        logger.info("[RESEARCH] Factory mode: %d pre-collected sources", len(pre_sources))
+        source_text = "\n\n---\n\n".join(
+            f"Source: [{s.get('source', 'unknown')}] {s.get('title', 'N/A')}\n"
+            f"URL: {s.get('url', 'N/A')}\n"
+            f"Summary: {s.get('summary', '')}\n"
+            f"Content: {(s.get('content') or '')[:2000]}"
+            for s in pre_sources
+        )
+
+        agent = create_researcher(llm)
+        task = Task(
+            description=(
+                f"You have pre-collected sources about: '{topic}'\n\n"
+                f"Extract a numbered list of KEY FACTS from these sources.\n\n"
+                f"For each fact, write one line in this format:\n"
+                f"[N] FACT: <specific detail> (Source: <name>, <url>)\n\n"
+                f"What counts as a fact:\n"
+                f"- Numbers: prices, specs, measurements, dates\n"
+                f"- Names: specific models, chips, tools, people\n"
+                f"- Quotes: direct quotes from the author\n"
+                f"- Problems: what went wrong and how it was fixed\n"
+                f"- Steps: concrete actions the author took\n\n"
+                f"What does NOT count:\n"
+                f"- Generic statements ('AI is advancing')\n"
+                f"- Opinions without data\n"
+                f"- Rephrased headlines\n\n"
+                f"Extract 10-20 facts. If a source has no specific facts, skip it.\n"
+                f"Write facts in Russian. Keep quotes in original language.\n\n"
+                f"Pre-collected sources:\n{source_text}"
+            ),
+            expected_output=(
+                "A numbered list of 10-20 specific facts in Russian.\n"
+                "Each fact has: number, the fact itself, source name and URL.\n"
+                "Format: [1] FACT: <detail> (Source: <name>, <url>)"
+            ),
+            agent=agent,
+        )
+
+        crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=True)
+        result = crew.kickoff()
+
+        return {
+            "sources": str(result),
+            "source_count": len(pre_sources),
+            "status": "writing",
+            "log": _add_log(state, f"[RESEARCH] Summarized {len(pre_sources)} pre-collected sources on: {topic}"),
+        }
+
+    # Normal mode: web search
     agent = create_researcher(llm)
     task = Task(
         description=(
@@ -109,6 +167,14 @@ def write_node(state: ArticleState) -> dict:
             f"Style: {preset.get('style', 'Technical, with code examples where relevant')}\n"
             f"Target length: {preset.get('target_length', '8000-15000 characters')}\n"
             f"Language: Russian\n\n"
+            f"CRITICAL RULES:\n"
+            f"1. Use ONLY facts from the research brief below. Do NOT invent details.\n"
+            f"2. Include specific numbers, specs, benchmarks from sources.\n"
+            f"3. If sources lack detail on something, say 'по имеющимся данным' — do NOT fabricate.\n"
+            f"4. Code examples must be RELEVANT to the actual topic and RUNNABLE.\n"
+            f"5. Do NOT add generic buzzword sections (IoT, AI agents) unless sources discuss them.\n"
+            f"6. Do NOT add Meta Description or Keywords sections at the end.\n"
+            f"7. Attribute facts to sources with [source name](url) links.\n\n"
             f"Sources to use:\n{sources}\n"
             f"{revision_context}\n\n"
             f"Structure requirements:\n{preset.get('structure', '- Title, Introduction, Main sections, Conclusion')}\n"
@@ -116,7 +182,8 @@ def write_node(state: ArticleState) -> dict:
         expected_output=(
             f"A complete article in Markdown format, "
             f"{preset.get('target_length', '8000-15000 characters')}. "
-            f"Every claim must reference the provided sources."
+            f"Every claim must be backed by specific data from sources. "
+            f"No Meta Description or Keywords sections."
         ),
         agent=agent,
     )
@@ -133,32 +200,33 @@ def write_node(state: ArticleState) -> dict:
     }
 
 
-# --- Node: Fact-Check ---
+# --- Node: Rate ---
 
-def fact_check_node(state: ArticleState) -> dict:
-    """Fact-checker agent verifies claims in the draft."""
+def rate_node(state: ArticleState) -> dict:
+    """Rater reads the draft and produces a structured checklist per section.
+
+    One job only: evaluate and produce actionable feedback.
+    Does NOT rewrite the article — that's Improver's job.
+    """
     draft = state.get("draft", "")
-    sources = state.get("sources", "")
     llm = _get_llm()
 
-    agent = create_fact_checker(llm)
+    agent = create_reviewer(llm)
     task = Task(
         description=(
-            f"Fact-check this article:\n\n{draft}\n\n"
-            f"Original sources used:\n{sources}\n\n"
-            f"For each factual claim:\n"
-            f"1. Extract the claim\n"
-            f"2. Verify against sources and web search\n"
-            f"3. Assign status: CONFIRMED / UNCONFIRMED / CONTRADICTED\n"
-            f"4. Provide evidence\n\n"
-            f"End with an overall accuracy score (1-10) on a separate line: SCORE: X"
+            f"Here is an article:\n\n{draft}\n\n"
+            f"Rate this article from 0 to 100.\n"
+            f"Then for each section (heading), write one line of feedback.\n\n"
+            f"Format your response EXACTLY like this:\n"
+            f"RATING: [number]\n\n"
+            f"CHECKLIST:\n"
+            f"- Section [name]: [what could be better — be specific]\n"
+            f"- Section [name]: [ok / what could be better]\n"
+            f"- Duplicates: [list any repeated information across sections]\n"
+            f"- Missing: [what important info is absent]\n"
         ),
         expected_output=(
-            "A structured fact-check report with:\n"
-            "- List of claims with verification status\n"
-            "- Evidence for each claim\n"
-            "- Overall accuracy score (1-10)\n"
-            "Format: SCORE: X on the last line"
+            "RATING: [number]\n\nCHECKLIST:\n- Section ...: ...\n- Section ...: ..."
         ),
         agent=agent,
     )
@@ -166,107 +234,151 @@ def fact_check_node(state: ArticleState) -> dict:
     crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=True)
     result = str(crew.kickoff())
 
-    # Extract score
-    score = 7.0  # default
-    for line in result.split("\n"):
-        line = line.strip()
-        if line.upper().startswith("SCORE:"):
-            try:
-                score = float(line.split(":")[1].strip().split("/")[0].strip())
-            except (ValueError, IndexError):
-                pass
+    # Extract rating
+    import re
+    score = 70.0
+    rating_match = re.search(r"RATING:\s*(\d+)", result)
+    if rating_match:
+        score = float(rating_match.group(1))
 
     return {
-        "fact_check_report": result,
-        "fact_check_score": score,
-        "status": "reviewing",
-        "log": _add_log(state, f"[FACT-CHECK] Score: {score}/10"),
+        "fact_check_report": result,  # reuse field for checklist
+        "fact_check_score": score / 10.0,
+        "status": "improving",
+        "log": _add_log(state, f"[RATE] Score: {score}/100"),
     }
 
 
-# --- Node: Review Gate (pure logic, no LLM) ---
+# --- Node: Improve ---
 
-def review_gate_node(state: ArticleState) -> dict:
-    """Decide: accept, revise, or reject based on fact-check score."""
-    score = state.get("fact_check_score", 0)
+def improve_node(state: ArticleState) -> dict:
+    """Improver takes the draft + checklist and produces an improved version.
+
+    One job only: rewrite based on specific feedback.
+    """
+    draft = state.get("draft", "")
+    checklist = state.get("fact_check_report", "")
+    llm = _get_llm()
+
+    agent = create_reviewer(llm)
+    task = Task(
+        description=(
+            f"Here is an article:\n\n{draft}\n\n"
+            f"Here is reviewer feedback:\n{checklist}\n\n"
+            f"Improve the article based on the feedback above.\n"
+            f"- Remove duplicate information across sections\n"
+            f"- Integrate quotes into text naturally (no standalone 'quotes' sections)\n"
+            f"- Remove sections that have no real content\n"
+            f"- Keep all specific facts, numbers, and source links\n"
+            f"- Output the full improved article in Markdown\n"
+        ),
+        expected_output=(
+            "The full improved article in Markdown format. Nothing else."
+        ),
+        agent=agent,
+    )
+
+    crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=True)
+    result = str(crew.kickoff())
+
+    return {
+        "edited_text": result,
+        "revision_count": state.get("revision_count", 0) + 1,
+        "status": "final_rating",
+        "log": _add_log(state, f"[IMPROVE] Article improved ({len(result)} chars)"),
+    }
+
+
+# --- Node: Final Rate ---
+
+def final_rate_node(state: ArticleState) -> dict:
+    """Final rater evaluates the improved article. If below threshold → back to Improver.
+
+    Threshold is configurable. Default 60 (will be calibrated via benchmarks).
+    """
+    article = state.get("edited_text", state.get("draft", ""))
+    llm = _get_llm()
+
+    agent = create_reviewer(llm)
+    task = Task(
+        description=(
+            f"Here is the final version of an article:\n\n{article}\n\n"
+            f"Rate it from 0 to 100. Write one sentence explaining the rating."
+            f"\n\nFormat:\nRATING: [number]\nEXPLANATION: [one sentence]"
+        ),
+        expected_output=(
+            "RATING: [number]\nEXPLANATION: [one sentence]"
+        ),
+        agent=agent,
+    )
+
+    crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=True)
+    result = str(crew.kickoff())
+
+    import re
+    score = 75.0
+    rating_match = re.search(r"RATING:\s*(\d+)", result)
+    if rating_match:
+        score = float(rating_match.group(1))
+
     revision_count = state.get("revision_count", 0)
-    max_revisions = state.get("max_revisions", settings.max_revisions)
-    threshold = settings.fact_check_pass_threshold
+    threshold = 60  # TODO: calibrate via benchmarks
 
-    if score >= threshold:
+    # Decide: accept or loop back
+    if score >= threshold or revision_count >= 2:
         verdict = "accept"
-    elif revision_count >= max_revisions:
-        verdict = "accept"  # accept after max revisions even if imperfect
     else:
         verdict = "revise"
 
     return {
+        "fact_check_score": score / 10.0,
         "review_verdict": verdict,
-        "revision_count": revision_count + (1 if verdict == "revise" else 0),
-        "log": _add_log(
-            state,
-            f"[REVIEW] Verdict: {verdict} (score={score}, revision={revision_count}/{max_revisions})"
-        ),
-    }
-
-
-# --- Node: Edit ---
-
-def edit_node(state: ArticleState) -> dict:
-    """Editor agent polishes the article."""
-    draft = state.get("draft", "")
-    fact_report = state.get("fact_check_report", "")
-    preset = _load_preset(state.get("preset", "habr"))
-    llm = _get_llm()
-
-    agent = create_editor(llm)
-    task = Task(
-        description=(
-            f"Edit this article to publication quality:\n\n{draft}\n\n"
-            f"Fact-check report (address all issues):\n{fact_report}\n\n"
-            f"Requirements:\n"
-            f"- Fix grammar and style issues\n"
-            f"- Ensure clear structure with proper headings\n"
-            f"- Add SEO elements: meta description, keywords\n"
-            f"- Maintain {preset.get('style', 'professional')} tone\n"
-            f"- Target length: {preset.get('target_length', '8000-15000 characters')}\n"
-            f"- Language: Russian\n\n"
-            f"After the article, add a section '## Changelog' listing every edit made."
-        ),
-        expected_output=(
-            "The polished article in Markdown, followed by a Changelog section."
-        ),
-        agent=agent,
-    )
-
-    crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=True)
-    result = str(crew.kickoff())
-
-    # Split article and changelog
-    if "## Changelog" in result:
-        parts = result.split("## Changelog", 1)
-        article = parts[0].strip()
-        changelog = parts[1].strip() if len(parts) > 1 else ""
-    else:
-        article = result
-        changelog = "No changelog provided"
-
-    return {
-        "edited_text": article,
-        "edit_changelog": changelog,
-        "status": "editing",
-        "log": _add_log(state, f"[EDIT] Article polished ({len(article)} chars)"),
+        "status": "final_rated",
+        "log": _add_log(state, f"[FINAL RATE] Score: {score}/100, verdict: {verdict} (revision {revision_count}/2)"),
     }
 
 
 # --- Node: Publish ---
 
 def publish_node(state: ArticleState) -> dict:
-    """Finalize and publish the article."""
+    """Finalize the article and save to DB if in factory mode."""
     article = state.get("edited_text", state.get("draft", ""))
+    article_db_id = state.get("article_db_id")
+
+    # Factory mode: update article in PostgreSQL
+    if article_db_id:
+        try:
+            from app.factory.db import update_article
+            from app.factory.quality_gate import check_level1, clean_artifacts
+
+            # Clean artifacts before saving
+            cleaned = clean_artifacts(article)
+
+            # Run quality gate
+            report = check_level1(cleaned)
+            status = "ready" if report.passed else "quality_check"
+
+            update_article(
+                article_db_id,
+                content_ru=cleaned,
+                title_ru=cleaned.split("\n")[0].lstrip("# ").strip()[:200],
+                char_count=len(cleaned),
+                fact_check_score=state.get("fact_check_score"),
+                revision_count=state.get("revision_count", 0),
+                status=status,
+                generation_log=state.get("log", []),
+            )
+            logger.info("[PUBLISH] Article id=%d saved to DB (status=%s, %d chars)",
+                        article_db_id, status, len(cleaned))
+
+            if not report.passed:
+                logger.warning("[PUBLISH] Quality gate issues: %s", "; ".join(report.issues))
+
+        except Exception as e:
+            logger.error("[PUBLISH] Failed to save to DB: %s", e, exc_info=True)
 
     return {
         "final_article": article,
         "status": "published",
-        "log": _add_log(state, f"[PUBLISH] Article published ({len(article)} chars)"),
+        "log": _add_log(state, f"[PUBLISH] Article finalized ({len(article)} chars)"),
     }

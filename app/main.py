@@ -81,6 +81,19 @@ def cli():
     srv_parser.add_argument("--host", default=settings.api_host)
     srv_parser.add_argument("--port", type=int, default=settings.api_port)
 
+    # Factory commands
+    factory_parser = subparsers.add_parser("factory", help="Content factory operations")
+    factory_sub = factory_parser.add_subparsers(dest="factory_cmd")
+
+    factory_sub.add_parser("collect", help="Run all collectors once")
+    factory_sub.add_parser("stats", help="Show factory statistics")
+
+    fgen = factory_sub.add_parser("generate", help="Generate one article from collected data")
+    fgen.add_argument("--preset", default="habr", choices=["habr", "dzen"])
+
+    factory_sub.add_parser("cycle", help="Run one full cycle (collect → generate → schedule)")
+    factory_sub.add_parser("run", help="Start continuous factory with scheduler")
+
     args = parser.parse_args()
 
     if args.command == "generate":
@@ -119,6 +132,38 @@ def cli():
     elif args.command == "serve":
         import uvicorn
         uvicorn.run("app.main:app", host=args.host, port=args.port, reload=True)
+
+    elif args.command == "factory":
+        from app.factory.orchestrator import collect_all, generate_one, run_cycle, run_continuous
+        from app.factory.db import get_factory_stats
+
+        if args.factory_cmd == "collect":
+            new = collect_all()
+            print(f"Collected {new} new items")
+
+        elif args.factory_cmd == "stats":
+            stats = get_factory_stats()
+            print("=== Factory Stats ===")
+            print(f"Raw items: {stats['raw_items_total']} total, {stats['raw_items_unprocessed']} unprocessed")
+            print(f"Articles: {stats['articles_by_status']}")
+            print(f"Published (24h): {stats['published_last_24h']}")
+            print(f"By platform: {stats['published_by_platform']}")
+
+        elif args.factory_cmd == "generate":
+            article_id = generate_one(preset=args.preset)
+            if article_id:
+                print(f"Generated article id={article_id}")
+            else:
+                print("No article generated (no topics available or pipeline failed)")
+
+        elif args.factory_cmd == "cycle":
+            run_cycle()
+
+        elif args.factory_cmd == "run":
+            run_continuous()
+
+        else:
+            factory_parser.print_help()
 
     else:
         parser.print_help()

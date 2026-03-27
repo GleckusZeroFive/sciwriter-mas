@@ -9,6 +9,11 @@ class ArticleState(TypedDict, total=False):
     preset: str  # "habr" or "dzen"
     keywords: list[str]
 
+    # Factory mode: pre-collected sources from DB (skip web research if populated)
+    pre_sources: list[dict]  # [{source, title, url, summary, content}]
+    article_db_id: int  # PostgreSQL articles.id for DB tracking
+    platform_target: str  # "habr" | "dzen" | "both"
+
     # Research phase
     sources: str  # concatenated research results
     source_count: int

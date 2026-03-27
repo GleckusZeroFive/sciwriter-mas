@@ -1,4 +1,15 @@
-"""LangGraph StateGraph assembly — the editorial pipeline."""
+"""LangGraph StateGraph assembly — the editorial pipeline v3.
+
+Pipeline: research → write → rate → improve → final_rate →(loop or publish)
+
+Each node does ONE thing (important for 8B models):
+- Research: extract numbered list of facts
+- Writer: write article from facts
+- Rater: structured checklist per section
+- Improver: rewrite based on checklist
+- Final Rater: score 0-100, loop if below threshold (max 2 cycles)
+- Publish: save to DB
+"""
 
 import logging
 
@@ -8,53 +19,60 @@ from app.graph.state import ArticleState
 from app.graph.nodes import (
     research_node,
     write_node,
-    fact_check_node,
-    review_gate_node,
-    edit_node,
+    rate_node,
+    improve_node,
+    final_rate_node,
     publish_node,
 )
-from app.graph.edges import route_after_review
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
+def _route_after_final_rate(state: ArticleState) -> str:
+    """Route after final rating: accept → publish, revise → improve again."""
+    verdict = state.get("review_verdict", "accept")
+    if verdict == "accept":
+        return "publish"
+    else:
+        return "improve"  # loop back
+
+
 def build_workflow() -> StateGraph:
-    """Build and compile the editorial workflow graph.
+    """Build the editorial workflow graph.
 
     Flow:
-        research → write → fact_check → review_gate
-            ↓ accept → edit → publish
-            ↓ revise → write (loop, max N times)
+        research → write → rate → improve → final_rate
+            ↓ accept → publish → END
+            ↓ revise → improve (loop, max 2 times via revision_count)
     """
     graph = StateGraph(ArticleState)
 
     # Add nodes
     graph.add_node("research", research_node)
     graph.add_node("write", write_node)
-    graph.add_node("fact_check", fact_check_node)
-    graph.add_node("review_gate", review_gate_node)
-    graph.add_node("edit", edit_node)
+    graph.add_node("rate", rate_node)
+    graph.add_node("improve", improve_node)
+    graph.add_node("final_rate", final_rate_node)
     graph.add_node("publish", publish_node)
 
-    # Linear flow: research → write → fact_check → review_gate
+    # Linear: research → write → rate → improve → final_rate
     graph.add_edge("research", "write")
-    graph.add_edge("write", "fact_check")
-    graph.add_edge("fact_check", "review_gate")
+    graph.add_edge("write", "rate")
+    graph.add_edge("rate", "improve")
+    graph.add_edge("improve", "final_rate")
 
-    # Conditional: review_gate → edit (accept) or write (revise)
+    # Conditional: final_rate → publish (accept) or improve (revise)
     graph.add_conditional_edges(
-        "review_gate",
-        route_after_review,
+        "final_rate",
+        _route_after_final_rate,
         {
-            "edit": "edit",
-            "write": "write",
-            "end": END,
+            "publish": "publish",
+            "improve": "improve",
         },
     )
 
-    # edit → publish → END
-    graph.add_edge("edit", "publish")
+    # publish → END
     graph.add_edge("publish", END)
 
     # Entry point
@@ -70,15 +88,7 @@ def create_pipeline():
 
 
 def run_pipeline(topic: str, preset: str = "habr") -> ArticleState:
-    """Run the full editorial pipeline synchronously.
-
-    Args:
-        topic: Article topic.
-        preset: Format preset name ("habr" or "dzen").
-
-    Returns:
-        Final state with the published article.
-    """
+    """Run the full editorial pipeline synchronously."""
     pipeline = create_pipeline()
 
     initial_state: ArticleState = {
@@ -92,7 +102,7 @@ def run_pipeline(topic: str, preset: str = "habr") -> ArticleState:
         "log": [f"[START] Topic: {topic}, Preset: {preset}"],
     }
 
-    logger.info("Starting pipeline: topic='%s', preset='%s'", topic, preset)
+    logger.info("Starting pipeline v3: topic='%s', preset='%s'", topic, preset)
     result = pipeline.invoke(initial_state)
     logger.info("Pipeline complete: status=%s", result.get("status"))
 

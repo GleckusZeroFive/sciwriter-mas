@@ -35,6 +35,24 @@ class Settings(BaseSettings):
     rag_final_top_k: int = 5
     rag_score_threshold: float = 0.35
 
+    # --- PostgreSQL ---
+    pg_host: str = "localhost"
+    pg_port: int = 5433
+    pg_db: str = "sciwriter"
+    pg_user: str = "sciwriter"
+    pg_password: str = "sciwriter_pass"
+
+    # --- Factory ---
+    factory_collect_interval_reddit: int = 900       # 15 min
+    factory_collect_interval_hn: int = 900           # 15 min
+    factory_collect_interval_arxiv: int = 3600       # 1 hour
+    factory_collect_interval_rss: int = 1800         # 30 min
+    factory_generate_interval: int = 3000            # 50 min
+    factory_publish_interval: int = 3600             # 1 hour
+    factory_reddit_client_id: str = ""
+    factory_reddit_client_secret: str = ""
+    factory_reddit_user_agent: str = "SciWriter/1.0"
+
     # --- Preset ---
     article_preset: str = "habr"
 
@@ -63,6 +81,16 @@ class Settings(BaseSettings):
     @property
     def data_dir(self) -> Path:
         return self.project_root / "data"
+
+    @property
+    def media_dir(self) -> Path:
+        d = self.project_root / "output" / "media"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @property
+    def pg_dsn(self) -> str:
+        return f"postgresql://{self.pg_user}:{self.pg_password}@{self.pg_host}:{self.pg_port}/{self.pg_db}"
 
 
 settings = Settings()
