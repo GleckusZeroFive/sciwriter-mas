@@ -4,8 +4,9 @@ import logging
 import yaml
 from pathlib import Path
 
-from crewai import Task, Crew, Process
-from langchain_openai import ChatOpenAI
+import os
+
+from crewai import Task, Crew, Process, LLM
 
 from app.config import settings
 from app.graph.state import ArticleState
@@ -17,11 +18,11 @@ from app.agents.editor import create_editor
 logger = logging.getLogger(__name__)
 
 
-def _get_llm() -> ChatOpenAI:
-    return ChatOpenAI(
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
+def _get_llm() -> LLM:
+    # CrewAI natively supports Ollama via 'ollama/' prefix
+    return LLM(
+        model=f"ollama/{settings.llm_model}",
+        base_url=settings.llm_base_url.replace("/v1", ""),
         temperature=settings.llm_temperature,
         max_tokens=settings.llm_max_tokens,
     )
