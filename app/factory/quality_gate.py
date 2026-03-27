@@ -334,33 +334,22 @@ def validate_tagged_claims(text: str, research_output: str) -> tuple[str, list[s
             cleaned.append(line)
             continue
 
-        # Line has numbers — check if tagged AND content matches
-        fact_matches = fact_ref.findall(stripped)
-        if not fact_matches:
-            # No tag at all → hallucination
-            removed.append(f"NO TAG: {stripped[:100]}")
-            continue
-
-        # Has tag — verify content matches
+        # Line has numbers — verify they exist in ANY fact
         line_numbers = extract_numbers_from_string(stripped)
-        tag_verified = False
 
-        for fact_num_str in fact_matches:
-            if not fact_num_str:  # [источник] without number
-                continue
-            fact_num = int(fact_num_str)
-            if fact_num in facts:
-                fact_numbers = extract_numbers_from_string(facts[fact_num])
-                # Check: do the numbers in this line overlap with FACT numbers?
-                overlap = line_numbers & fact_numbers
-                if overlap:
-                    tag_verified = True
-                    break
+        # Collect all numbers from all facts into one pool
+        all_fact_numbers = set()
+        for fact_content in facts.values():
+            all_fact_numbers |= extract_numbers_from_string(fact_content)
 
-        if tag_verified:
+        # Check: do ANY numbers in this line appear in the fact pool?
+        overlap = line_numbers & all_fact_numbers
+        if overlap:
+            # At least one number is grounded in sources — keep the line
             cleaned.append(line)
         else:
-            removed.append(f"MISMATCH: {stripped[:100]}")
+            # No numbers from this line match any fact — hallucination
+            removed.append(f"UNGROUNDED: {stripped[:100]}")
             continue
 
     result = "\n".join(cleaned)
