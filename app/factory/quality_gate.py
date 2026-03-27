@@ -288,13 +288,16 @@ def validate_facts_deterministic(text: str) -> tuple[str, list[str]]:
     for line in lines:
         stripped = line.strip()
 
-        # Skip headings, empty lines, list markers without numbers, code blocks
+        # Skip headings, empty lines, code blocks, links-only lines, ToC
         if (not stripped
                 or stripped.startswith("#")
                 or stripped.startswith("```")
                 or stripped.startswith("![")
                 or stripped.startswith("[FACT-")
-                or stripped.startswith("- **") and not HAS_NUMBER.search(stripped)):
+                or re.match(r"^-?\s*\[.*\]\(https?://", stripped)  # link-only lines
+                or re.match(r"^\d+\.\s*\[", stripped)  # numbered link lists
+                or re.match(r"^[\d.]+\s*\[", stripped)  # ToC entries
+                ):
             cleaned_lines.append(line)
             continue
 

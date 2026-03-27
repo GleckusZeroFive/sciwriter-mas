@@ -383,10 +383,15 @@ def publish_node(state: ArticleState) -> dict:
     if article_db_id:
         try:
             from app.factory.db import update_article
-            from app.factory.quality_gate import check_level1, clean_artifacts
+            from app.factory.quality_gate import check_level1, clean_artifacts, validate_facts_deterministic
 
             # Clean artifacts before saving
             cleaned = clean_artifacts(article)
+
+            # Final deterministic validation — catch any numbers Improver re-introduced
+            cleaned, removed = validate_facts_deterministic(cleaned)
+            if removed:
+                logger.info("[PUBLISH] Final validator removed %d untagged lines", len(removed))
 
             # Run quality gate (min 3000 chars for factory articles)
             report = check_level1(cleaned, min_length=3000)
