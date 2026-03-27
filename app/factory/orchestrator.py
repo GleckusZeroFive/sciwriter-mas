@@ -28,6 +28,41 @@ from app.factory.quality_gate import check_level1, clean_artifacts, build_llm_ve
 logger = logging.getLogger(__name__)
 
 
+def ensure_ollama_alive() -> bool:
+    """Check if Ollama model is loaded. If not, reload it with keep_alive=-1.
+    Returns True if model is ready."""
+    import httpx
+    base = settings.llm_base_url.replace("/v1", "")
+
+    try:
+        # Check loaded models
+        resp = httpx.get(f"{base}/api/ps", timeout=5)
+        models = resp.json().get("models", [])
+        loaded = [m["name"] for m in models]
+
+        if settings.llm_model in loaded or any(settings.llm_model in m for m in loaded):
+            return True
+
+        # Model not loaded — reload
+        logger.warning("[OLLAMA] Model not loaded, reloading %s...", settings.llm_model)
+        httpx.post(
+            f"{base}/api/generate",
+            json={
+                "model": settings.llm_model,
+                "prompt": "test",
+                "stream": False,
+                "keep_alive": -1,
+            },
+            timeout=120,
+        )
+        logger.info("[OLLAMA] Model reloaded successfully")
+        return True
+
+    except Exception as e:
+        logger.error("[OLLAMA] Health check failed: %s", e)
+        return False
+
+
 def collect_all() -> int:
     """Run all available collectors. Returns total new items inserted."""
     collectors = [
@@ -106,6 +141,24 @@ def generate_one(preset: str = "habr") -> int | None:
             "article_db_id": article_id,
             "max_revisions": settings.max_revisions,
         }
+
+        # Ensure Ollama model is loaded and keep it alive
+        try:
+            import httpx
+            # 1. Load model with keep_alive=-1 (never unload)
+            httpx.post(
+                settings.llm_base_url.replace("/v1", "") + "/api/generate",
+                json={
+                    "model": settings.llm_model,
+                    "prompt": "hi",
+                    "stream": False,
+                    "keep_alive": -1,  # never unload until explicit request
+                },
+                timeout=120,
+            )
+            logger.info("[GENERATE] Ollama model loaded with keep_alive=-1")
+        except Exception as e:
+            logger.warning("[GENERATE] Ollama warmup failed: %s", e)
 
         logger.info("[GENERATE] Starting pipeline for article id=%d...", article_id)
         start_time = time.time()
