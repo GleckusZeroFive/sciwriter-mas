@@ -1,0 +1,28 @@
+name: habr
+format_name: "Habr technical article"
+platform: "Habr"
+
+audience: "developers, engineers, and tech enthusiasts"
+style: "Technical, precise, with code examples and diagrams where relevant. Professional but engaging tone."
+target_length: "8000-15000 characters"
+
+structure: |
+  - Catchy technical title (not clickbait)
+  - Brief intro: what problem does this solve, why should the reader care
+  - Table of contents (for long articles)
+  - Main sections with clear H2/H3 headings
+  - Code examples in fenced blocks with language tags
+  - Diagrams or architecture descriptions where helpful
+  - Key takeaways / summary
+  - References and links to sources
+
+seo:
+  meta_description_length: 160
+  keywords_count: 5
+  include_toc: true
+
+formatting:
+  use_code_blocks: true
+  use_tables: true
+  max_heading_depth: 3
+  image_placeholders: true

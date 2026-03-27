@@ -1,0 +1,27 @@
+name: dzen
+format_name: "Yandex Dzen popular science article"
+platform: "Yandex Dzen"
+
+audience: "general readers interested in science and technology"
+style: "Popular science: explain complex topics in simple language. Engaging, storytelling approach. Short paragraphs, accessible vocabulary."
+target_length: "5000-8000 characters"
+
+structure: |
+  - Attention-grabbing headline (curiosity-driven)
+  - Hook: surprising fact or question in the first paragraph
+  - Short paragraphs (2-3 sentences each)
+  - Subheadings every 2-3 paragraphs
+  - Real-world analogies to explain complex concepts
+  - Practical implications: why should the reader care
+  - Closing thought or call to reflection
+
+seo:
+  meta_description_length: 120
+  keywords_count: 3
+  include_toc: false
+
+formatting:
+  use_code_blocks: false
+  use_tables: false
+  max_heading_depth: 2
+  image_placeholders: true
